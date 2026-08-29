@@ -5,17 +5,20 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import inspect
+import json
 import logging
 import os
 import time
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any, cast
+from uuid import uuid4
 
 from agents import (
     set_default_openai_api,
     set_default_openai_key,
     set_tracing_disabled,
 )
+from agents.items import ModelResponse
 from agents.model_settings import ModelSettings
 from agents.models.fake_id import FAKE_RESPONSES_ID
 from agents.models.interface import Model, ModelProvider
@@ -27,16 +30,20 @@ from agents.retry import (
     RetryPolicyContext,
     retry_policies,
 )
+from agents.usage import Usage
 from openai.types.responses import (
     Response,
     ResponseCompletedEvent,
+    ResponseFunctionToolCall,
     ResponseOutputItemAddedEvent,
     ResponseOutputItemDoneEvent,
+    ResponseOutputMessage,
+    ResponseOutputText,
 )
 from openai.types.responses.response_usage import ResponseUsage
 from openai.types.shared import Reasoning
 
-from strix.config import codex
+from strix.config import claude_code, codex
 from strix.config.loader import load_settings
 from strix.config.tool_call_ids import TurnCallIdRewriter, dedupe_input
 from strix.config.tool_call_limits import TurnToolCallLimiter
@@ -47,11 +54,10 @@ if TYPE_CHECKING:
 
     from agents.agent_output import AgentOutputSchemaBase
     from agents.handoffs import Handoff
-    from agents.items import ModelResponse, TResponseInputItem, TResponseStreamEvent
+    from agents.items import TResponseInputItem, TResponseStreamEvent
     from agents.models.interface import ModelTracing
     from agents.retry import ModelRetryAdvice, ModelRetryAdviceRequest
     from agents.tool import Tool
-    from agents.usage import Usage
     from openai import AsyncOpenAI
     from openai.types.responses.response_prompt_param import ResponsePromptParam
 
@@ -240,6 +246,113 @@ class _NonStreamingModel(Model):
             prompt=prompt,
         )
         yield _completed_stream_event(response, getattr(self._inner, "model", None))
+
+
+class _ClaudeCodeModel(Model):
+    """Model backed by a local, already-authenticated Claude Code CLI session.
+
+    Every turn shells out to ``claude -p`` once (see
+    :mod:`strix.config.claude_code`): the CLI has no tools of its own, so its
+    reply is just the model's next-action decision, translated back into the
+    same ``openai.types.responses`` output items every other provider
+    returns. Strix's own ``Runner`` still owns tool execution — this class
+    only supplies the model's turn, same as any other ``Model``.
+    """
+
+    def __init__(self, model_slug: str | None) -> None:
+        self._model_slug = model_slug or None
+
+    async def close(self) -> None:
+        return None
+
+    def get_retry_advice(
+        self,
+        request: ModelRetryAdviceRequest,  # noqa: ARG002
+    ) -> ModelRetryAdvice | None:
+        return None
+
+    async def get_response(
+        self,
+        system_instructions: str | None,
+        input: str | list[TResponseInputItem],  # noqa: A002
+        model_settings: ModelSettings,  # noqa: ARG002 - part of the Model interface
+        tools: list[Tool],
+        output_schema: AgentOutputSchemaBase | None,  # noqa: ARG002
+        handoffs: list[Handoff],  # noqa: ARG002
+        tracing: ModelTracing,  # noqa: ARG002
+        *,
+        previous_response_id: str | None,  # noqa: ARG002
+        conversation_id: str | None,  # noqa: ARG002
+        prompt: ResponsePromptParam | None,  # noqa: ARG002
+    ) -> ModelResponse:
+        stdin_prompt = claude_code.build_stdin_prompt(system_instructions, input, tools)
+        result = await claude_code.run_turn(model_slug=self._model_slug, stdin_prompt=stdin_prompt)
+        return ModelResponse(
+            output=_claude_code_output_items(result),
+            usage=_claude_code_usage(result),
+            response_id=None,
+        )
+
+    async def stream_response(
+        self,
+        system_instructions: str | None,
+        input: str | list[TResponseInputItem],  # noqa: A002
+        model_settings: ModelSettings,
+        tools: list[Tool],
+        output_schema: AgentOutputSchemaBase | None,
+        handoffs: list[Handoff],
+        tracing: ModelTracing,
+        *,
+        previous_response_id: str | None,
+        conversation_id: str | None,
+        prompt: ResponsePromptParam | None,
+    ) -> AsyncIterator[TResponseStreamEvent]:
+        response = await self.get_response(
+            system_instructions,
+            input,
+            model_settings,
+            tools,
+            output_schema,
+            handoffs,
+            tracing,
+            previous_response_id=previous_response_id,
+            conversation_id=conversation_id,
+            prompt=prompt,
+        )
+        yield _completed_stream_event(response, self._model_slug)
+
+
+def _claude_code_output_items(result: claude_code.TurnResult) -> list[Any]:
+    items: list[Any] = [
+        ResponseFunctionToolCall(
+            type="function_call",
+            call_id=f"call_{uuid4().hex}",
+            name=call.name,
+            arguments=json.dumps(call.arguments),
+            status="completed",
+        )
+        for call in result.tool_calls
+    ]
+    if result.text is not None:
+        items.append(
+            ResponseOutputMessage(
+                id=f"msg_{uuid4().hex}",
+                type="message",
+                role="assistant",
+                status="completed",
+                content=[ResponseOutputText(type="output_text", text=result.text, annotations=[])],
+            )
+        )
+    return items
+
+
+def _claude_code_usage(result: claude_code.TurnResult) -> Usage:
+    return Usage(
+        requests=1,
+        input_tokens=result.input_tokens,
+        output_tokens=result.output_tokens,
+        total_tokens=result.input_tokens + result.output_tokens,
+    )
 
 
 class _TurnGuardModel(Model):
@@ -520,6 +633,7 @@ class StrixProvider(MultiProvider):
     def get_model(self, model_name: str | None) -> Model:
         llm = load_settings().llm
         slug = codex.subscription_model(model_name)
+        claude_code_slug = claude_code.subscription_model(model_name)
         idle_timeout = float(llm.stream_idle_timeout)
         if slug:
             # The ChatGPT subscription backend is always streamed; it has no
@@ -530,6 +644,11 @@ class StrixProvider(MultiProvider):
                 codex.get_subscription_client(),
                 reasoning_effort=llm.reasoning_effort,
             )
+        elif claude_code_slug:
+            # Each turn is one `claude -p` call that returns only once it has
+            # a full reply; there is no partial stream to time out mid-flight.
+            model = _ClaudeCodeModel(claude_code_slug)
+            idle_timeout = 0.0
         else:
             model = super().get_model(model_name)
             if llm.disable_streaming:
@@ -605,7 +724,10 @@ def configure_sdk_model_defaults(settings: Settings) -> None:
     """Apply Strix config to SDK-native defaults."""
     llm = settings.llm
     set_tracing_disabled(True)
-    if codex.subscription_model(llm.model):
+    if codex.subscription_model(llm.model) or claude_code.subscription_model(llm.model):
+        # Both subscription backends manage their own auth (OpenAI OAuth, and
+        # the local `claude` CLI's own session) — nothing to wire into
+        # LiteLLM or the SDK's default OpenAI client.
         return
     _configure_litellm_compatibility()
     _configure_openrouter_attribution(llm.model)
@@ -829,6 +951,9 @@ def is_recommended_or_frontier_model(model_name: str) -> bool:
     name = _normalized_model_name(model_name)
     if not name:
         return False
+    if claude_code.subscription_model(name):
+        # Always one of Anthropic's current Claude Code models by definition.
+        return True
     if name in _RECOMMENDED_MODEL_NAME_SET:
         return True
     provider_name, bare_model_name = _split_model_provider(name)
@@ -923,7 +1048,7 @@ def routes_through_litellm(model_name: str | None) -> bool:
     OpenAI-compatible gateway in front of Claude.
     """
     name = (model_name or "").strip()
-    if not name or codex.subscription_model(name):
+    if not name or codex.subscription_model(name) or claude_code.subscription_model(name):
         return False
     prefix, _, rest = name.partition("/")
     return bool(rest) and prefix.lower() not in {"openai", "any-llm"}
