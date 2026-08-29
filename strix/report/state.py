@@ -6,10 +6,8 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
-from typing import Any, Optional, cast
+from typing import TYPE_CHECKING, Any, Optional, cast
 from uuid import uuid4
-
-from agents.usage import Usage
 
 from strix.config import subscription
 from strix.config.loader import load_settings
@@ -17,7 +15,6 @@ from strix.core.paths import run_dir_for, runtime_state_dir
 from strix.report.coverage import write_coverage
 from strix.report.pricing import resolve_litellm_model
 from strix.report.sarif import write_sarif
-from strix.report.usage import LLMUsageLedger
 from strix.report.writer import (
     read_run_record,
     write_executive_report,
@@ -25,6 +22,10 @@ from strix.report.writer import (
     write_vulnerabilities,
 )
 from strix.telemetry import posthog, scarf
+
+
+if TYPE_CHECKING:
+    from agents.usage import Usage
 
 
 logger = logging.getLogger(__name__)
@@ -131,6 +132,10 @@ class ReportState:
 
         self.scan_results: dict[str, Any] | None = None
         self.scan_config: dict[str, Any] | None = None
+        # Imported here so importing this module never enters the agents SDK
+        # package (which the warm-up thread may be initializing concurrently).
+        from strix.report.usage import LLMUsageLedger
+
         self._llm_usage = LLMUsageLedger()
         self._telemetry_llm_usage_baseline: dict[str, Any] = {}
         auth_mode = subscription.auth_mode(load_settings().llm.model)
@@ -338,7 +343,7 @@ class ReportState:
         self,
         *,
         agent_id: str,
-        usage: Usage | None,
+        usage: "Usage | None",
         agent_name: str | None = None,
         model: str | None = None,
     ) -> None:
@@ -414,6 +419,22 @@ class ReportState:
         if self.run_record.get("mcp_connections") == names:
             return
         self.run_record["mcp_connections"] = names
+        self.save_run_data()
+
+    def record_mcp_connection_status(self, status: list[dict[str, Any]]) -> None:
+        """Persist the run's non-secret MCP connection status roster.
+
+        ``status`` is one entry per connection carrying only ``name``,
+        ``provider``, ``tool_count``, and ``dead`` (no config, url, token, or
+        auth). Saved as soon as the run connects and rewritten each time a
+        connection dies, so the viewer, which rebuilds its display by re-reading
+        the run's files from disk, can show a live connections panel and health
+        without any in-memory event sink. Kept separate from the
+        ``mcp_connections`` name list so neither field repurposes the other.
+        """
+        if self.run_record.get("mcp_connection_status") == status:
+            return
+        self.run_record["mcp_connection_status"] = status
         self.save_run_data()
 
     def set_scan_config(self, config: dict[str, Any]) -> None:
