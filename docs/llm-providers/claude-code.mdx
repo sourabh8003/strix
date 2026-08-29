@@ -1,0 +1,59 @@
+---
+title: "Claude Code"
+description: "Run Strix on your Claude subscription via the Claude Code CLI"
+---
+
+Instead of a metered `LLM_API_KEY`, Strix can drive a local, already-authenticated
+[Claude Code](https://claude.com/claude-code) session — useful if you have a Claude Pro or Max
+subscription and want to avoid separate API billing.
+
+## Setup
+
+```bash
+claude auth login   # skip if `claude` is already signed in
+claude auth status   # confirm you're logged in
+
+export STRIX_LLM="claude-code/sonnet"
+strix --target ./app-directory
+```
+
+No `LLM_API_KEY` is needed — auth is entirely delegated to the `claude` CLI's own sign-in.
+
+## Model Selection
+
+`claude-code/<model>` accepts anything `claude --model` does:
+
+| STRIX_LLM | Runs |
+|-----------|------|
+| `claude-code/sonnet` | The `claude` CLI's current Sonnet alias |
+| `claude-code/opus` | The `claude` CLI's current Opus alias |
+| `claude-code/claude-opus-5` | A specific model name |
+
+## How it works
+
+Each agent turn shells out to `claude -p` once, with every one of Claude Code's own built-in
+tools disabled (`--tools ""`) and no MCP servers registered. Strix's own tool schemas and the
+running conversation are serialized into the prompt instead, and a `--json-schema` constraint
+forces the reply into a small envelope Strix translates back into a normal tool call or message.
+Strix's own runner still executes every tool call, tracks coverage, and enforces budgets exactly
+as it does for any other provider — the CLI only supplies the model's decision each turn.
+
+Because this is a text-described-tools bridge rather than the model's native tool-calling, it is
+slightly less reliable than a native API integration (e.g. `anthropic/claude-sonnet-5` with an API
+key) and does not yet support image/screenshot input in the conversation. If you hit persistent
+tool-call issues, switching to a metered Anthropic API key is the more robust fallback.
+
+## Requirements
+
+- The `claude` CLI installed and on `PATH` ([install docs](https://claude.com/claude-code))
+- Signed in with `claude auth login` (or already signed in)
+
+## Check status
+
+```bash
+claude auth status
+```
+
+Using a Claude subscription outside Claude Code / claude.ai is not officially supported by
+Anthropic for third-party tools — this is the same trade-off Strix already makes for its
+ChatGPT subscription backend (`strix auth login chatgpt`, see the main README).

@@ -281,9 +281,9 @@ def is_subscription_run(report_state: Any) -> bool:
     record = getattr(report_state, "run_record", None)
     if isinstance(record, dict) and record.get("auth_mode"):
         return record.get("auth_mode") == "subscription"
-    from strix.config import codex
+    from strix.config import subscription
 
-    return codex.auth_mode(load_settings().llm.model) == "subscription"
+    return subscription.auth_mode(load_settings().llm.model) == "subscription"
 
 
 def _int_stat(usage: dict[str, Any], key: str) -> int:
@@ -382,12 +382,15 @@ def build_live_stats_text(report_state: Any) -> Text:
     if not report_state:
         return stats_text
 
+    from strix.config import subscription as subscription_config
+
     model = load_settings().llm.model or "unknown"
     stats_text.append("Model ", style="dim")
     stats_text.append(str(model), style="white")
-    if is_subscription_run(report_state):
+    label = subscription_config.subscription_label(model)
+    if label:
         stats_text.append("  ·  ", style="dim white")
-        stats_text.append("ChatGPT subscription", style="#22c55e")
+        stats_text.append(label, style="#22c55e")
     stats_text.append("\n")
 
     vuln_count = len(report_state.vulnerability_reports)
@@ -428,12 +431,14 @@ def build_tui_stats_text(report_state: Any) -> Text:
     if not report_state:
         return stats_text
 
+    from strix.config import subscription as subscription_config
+
     model = load_settings().llm.model or "unknown"
     stats_text.append(str(model), style="white")
-    subscription = is_subscription_run(report_state)
-    if subscription:
+    label = subscription_config.subscription_label(model)
+    if label:
         stats_text.append("\n")
-        stats_text.append("ChatGPT subscription", style="#22c55e")
+        stats_text.append(label, style="#22c55e")
 
     usage = _llm_usage(report_state)
     if usage and _int_stat(usage, "total_tokens") > 0:
@@ -443,7 +448,7 @@ def build_tui_stats_text(report_state: Any) -> Text:
             style="white",
         )
         cost = _float_stat(usage, "cost")
-        if subscription:
+        if label:
             stats_text.append(" · ", style="white")
             stats_text.append("$0.00", style="white")
         elif cost > 0:

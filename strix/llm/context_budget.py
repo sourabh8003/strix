@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 _STRIPPABLE_PREFIXES = (
     "openai/",
     "chatgpt/",
+    "claude-code/",
     "litellm/",
     "any-llm/",
     "ollama/",

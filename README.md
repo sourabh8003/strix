@@ -320,6 +320,23 @@ strix auth status             # show the active sign-in
 strix auth logout             # forget the sign-in
 ```
 
+#### Run on a Claude subscription via Claude Code
+
+If you have [Claude Code](https://claude.com/claude-code) installed and signed in (Pro/Max
+subscription), Strix can drive it directly instead of paying for a separate Anthropic API key:
+
+```bash
+claude auth login   # skip if `claude` is already signed in
+
+export STRIX_LLM="claude-code/sonnet"   # claude-code/<model> runs through your local `claude` CLI
+strix --target ./app-directory
+```
+
+`<model>` accepts anything `claude --model` does (`sonnet`, `opus`, or a full model name like
+`claude-opus-5`). Each turn shells out to `claude -p` with every built-in tool disabled — Strix's
+own tools are the only ones the model can call, and Strix still executes them itself, exactly as
+with any other provider. Requires the `claude` CLI on `PATH`; nothing else to configure.
+
 #### Connect your own MCP servers
 
 Strix can connect to Model Context Protocol (MCP) servers you list and expose their tools to the agent during a run. Create `~/.strix/mcp-servers.json` with a JSON list of servers. Each entry is either a local `stdio` server that Strix launches as a subprocess, or a remote `http` server:
