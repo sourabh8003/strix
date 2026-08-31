@@ -308,6 +308,7 @@ async def spawn_child_agent(
     sessions_to_close: list[SQLiteSession],
     run_config: RunConfig,
     max_turns: int,
+    max_agents: int | None = None,
     interactive: bool,
     parent_ctx: dict[str, Any],
     name: str,
@@ -320,6 +321,16 @@ async def spawn_child_agent(
     parent_id = parent_ctx.get("agent_id")
     if not isinstance(parent_id, str):
         raise TypeError("Parent agent_id missing from context")
+
+    if max_agents is not None and len(coordinator.statuses) >= max_agents:
+        return {
+            "success": False,
+            "error": (
+                f"Agent cap reached ({max_agents} total agents already created this scan, "
+                "root included). No more agents can be spawned — consolidate this work into "
+                "yourself or an existing agent instead."
+            ),
+        }
 
     child_id = uuid.uuid4().hex[:8]
     child_agent = factory(name=name, skills=skills)

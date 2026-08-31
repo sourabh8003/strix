@@ -18,14 +18,14 @@ from openai import RateLimitError
 
 from strix.agents.factory import build_strix_agent, make_child_factory
 from strix.agents.prompt import render_system_prompt
-from strix.config import load_settings
+from strix.config import load_settings, subscription
 from strix.config.models import (
     StrixProvider,
     configure_sdk_model_defaults,
     supports_strict_tool_schemas,
     uses_chat_completions_tool_schema,
 )
-from strix.config.settings import DEFAULT_MAX_TURNS
+from strix.config.settings import DEFAULT_MAX_TURNS, DEFAULT_SUBSCRIPTION_MAX_AGENTS
 from strix.core.agents import AgentCoordinator
 from strix.core.execution import (
     respawn_subagents,
@@ -190,6 +190,7 @@ async def run_strix_scan(
     interactive: bool = False,
     max_turns: int = DEFAULT_MAX_TURNS,
     max_budget_usd: float | None = None,
+    max_agents: int | None = None,
     model: str | None = None,
     cleanup_on_exit: bool = True,
     event_sink: StreamEventSink | None = None,
@@ -214,6 +215,10 @@ async def run_strix_scan(
     command-line default) it reads ``~/.strix/mcp-servers.json`` itself. Either
     way the engine does the connecting, so the caller passes inert configs plus
     metadata and never live sessions.
+    ``max_agents`` caps total agents for the scan (root included); when ``None``
+    on a model subscription it defaults to :data:`DEFAULT_SUBSCRIPTION_MAX_AGENTS`
+    — the scan-wide cost budget cannot bound spend there (subscription usage
+    always reports as $0), so agent count is the only guardrail available.
     """
 
     def report(phase: str) -> None:
@@ -252,6 +257,13 @@ async def run_strix_scan(
             "No LLM model configured. Set STRIX_LLM env or pass model= to run_strix_scan().",
         )
     logger.info("LLM model resolved: %s", resolved_model)
+    if max_agents is None and subscription.auth_mode(resolved_model) == "subscription":
+        max_agents = DEFAULT_SUBSCRIPTION_MAX_AGENTS
+        logger.info(
+            "No --max-agents set on a subscription model; capping at %d total agents to "
+            "protect the plan's shared usage window (override with --max-agents)",
+            max_agents,
+        )
     chat_completions_tools = uses_chat_completions_tool_schema(resolved_model, settings)
     strict_tool_schemas = supports_strict_tool_schemas(resolved_model)
     if not strict_tool_schemas:
@@ -508,6 +520,7 @@ async def run_strix_scan(
                 sessions_to_close=sessions_to_close,
                 run_config=run_config,
                 max_turns=max_turns,
+                max_agents=max_agents,
                 interactive=interactive,
                 event_sink=event_sink,
                 hooks=hooks,

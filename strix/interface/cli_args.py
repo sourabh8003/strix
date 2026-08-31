@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 from strix.config import apply_config_override
-from strix.config.settings import DEFAULT_MAX_TURNS
+from strix.config.settings import DEFAULT_MAX_TURNS, DEFAULT_SUBSCRIPTION_MAX_AGENTS
 from strix.core.paths import run_dir_for, runtime_state_dir
 from strix.interface.scan_setup import attach_workspace_mount, build_targets_info
 from strix.interface.update_check import self_update
@@ -266,6 +266,21 @@ Examples:
         help=(
             "Maximum turns per agent (> 0, default %(default)s). Each agent is force-stopped "
             "when it reaches this limit, with graduated wrap-up warnings as it is approached."
+        ),
+    )
+
+    parser.add_argument(
+        "--max-agents",
+        dest="max_agents",
+        metavar="N",
+        type=_positive_int,
+        default=None,
+        help=(
+            "Maximum total agents for the whole scan, root included (> 0). New agents are "
+            "refused once this is reached; agents already running finish normally. Defaults to "
+            "unlimited on a metered API key (control spend with --max-budget instead), or to "
+            f"{DEFAULT_SUBSCRIPTION_MAX_AGENTS} on a model subscription (e.g. claude-code/*, "
+            "chatgpt/*), where cost-based budgeting cannot apply."
         ),
     )
 

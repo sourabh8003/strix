@@ -12,6 +12,13 @@ ReasoningEffort = Literal["none", "minimal", "low", "medium", "high", "xhigh", "
 
 DEFAULT_MAX_TURNS = 500
 
+# Applied automatically when a scan runs on a model subscription (no --max-agents given).
+# The scan-wide dollar budget is a no-op there (subscription usage always reports as $0 cost),
+# so unbounded agent spawning has no circuit breaker at all unless something else bounds it —
+# this keeps a runaway "massive parallel swarm" from burning through a subscription's shared,
+# fixed usage window in minutes. Metered API-key runs are unaffected: cost is their guardrail.
+DEFAULT_SUBSCRIPTION_MAX_AGENTS = 8
+
 _BASE_CONFIG = SettingsConfigDict(
     case_sensitive=False,
     populate_by_name=True,

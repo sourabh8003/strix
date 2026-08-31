@@ -199,6 +199,7 @@ async def run_cli(args: Any) -> None:  # noqa: PLR0915
                     interactive=bool(getattr(args, "interactive", False)),
                     max_budget_usd=getattr(args, "max_budget_usd", None),
                     max_turns=getattr(args, "max_turns", DEFAULT_MAX_TURNS),
+                    max_agents=getattr(args, "max_agents", None),
                     status_sink=_note_startup_phase,
                 )
             finally:
